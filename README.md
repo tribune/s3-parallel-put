@@ -50,7 +50,7 @@ for each key).  If you know that some keys are already present and that they
 have the correct values, then `add` is faster than `update` (it avoids
 calculating the MD5 sum of the content on the client side).
 
-`--content-type=CONTENT-TYPE` sets the `Content-Type` header. 
+`--content-type=CONTENT-TYPE` sets the `Content-Type` header.
 (accepted parameter `guess`), (eg. `--content-type=guess`)
 
 `--gzip` compresses common text files and sets the `Content-Encoding` header to
@@ -75,6 +75,12 @@ to all files uploaded.
 
 `--header=HEADER:VALUE` adds an arbitrary header to the S3 file. This
 option can be specified multiple times.
+
+`--yas3fs` for each file, add the x-amz-meta-attr header containing the attirbutes for use with [yas3fs](https://github.com/danilop/yas3fs).
+
+`--yas3fs-uid` uid to set in the yas3fs attributes. If using the uid option to mount the yas3fs file system, you likely want to set the same value here.
+
+`--yas3fs-gid` gid to set in the yas3fs attributes. If using the gid option to mount the yas3fs file system, you likely want to set the same value here.
 
 Architecture
 ------------
