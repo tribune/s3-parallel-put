@@ -41,11 +41,9 @@ import time
 import mimetypes
 import stat
 import json
+import hashlib
 
-import boto
-from boto.s3.connection import S3Connection
-from boto.s3.acl import CannedACLStrings
-from boto.utils import compute_md5
+import boto3
 
 
 DONE_RE = re.compile(r'\AINFO:s3-parallel-put\[putter-\d+\]:\S+\s+->\s+(\S+)\s*\Z')
@@ -105,7 +103,7 @@ class Value(object):
                     file_object.seek(self.offset)
                     self.content = file_object.read(self.size)
             elif self.path:
-                with open(self.path) as file_object:
+                with open(self.path, 'rb') as file_object:
                     self.content = file_object.read()
             else:
                 assert False
@@ -113,7 +111,7 @@ class Value(object):
 
     def calculate_md5(self):
         if self.md5 is None:
-            self.md5 = compute_md5(StringIO(self.get_content()))
+            self.md5 = hashlib.md5(StringIO(self.get_content()).getvalue()).hexdigest()
         return self.md5
 
     def get_size(self):
@@ -167,16 +165,17 @@ def walk_tar(source, options):
                 yield (key_name, dict(content=content, path=path))
 
 
-def walk_s3(source, options):
-    connection = S3Connection(host=options.host, is_secure=options.secure)
-    for key in connection.get_bucket(source).list():
-        yield (
-            key.name,
-            dict(
-                bucket_name=key.bucket.name,
-                md5=key.etag,
-                size=key.size,
-                path='%s/%s' % (source, key.name)))
+#def walk_s3(source, options):
+    # TODO: Not addressing this function for boto3 port for first pass...
+    # connection = S3Connection(host=options.host, is_secure=options.secure)
+    #for key in connection.get_bucket(source).list():
+    #    yield (
+    #        key.name,
+    #        dict(
+    #            bucket_name=key.bucket.name,
+    #            md5=key.etag,
+    #            size=key.size,
+    #            path='%s/%s' % (source, key.name)))
 
 
 def walker(walk, put_queue, sources, options):
@@ -206,17 +205,20 @@ def put_add(bucket, key_name, value):
 
 
 def put_stupid(bucket, key_name, value):
-    return bucket.new_key(key_name)
+    return key_name
 
 
 def put_update(bucket, key_name, value):
-    key = bucket.get_key(key_name)
+    key = None
+    for s3object in bucket.objects.all():
+        if s3object.key == key_name:
+            existing_object = s3object
+            key = existing_object.key
     if key is None:
-        return bucket.new_key(key_name)
+        return key_name
     else:
-        # Boto's md5 function actually returns 3-tuple: (hexdigest, base64, size)
         value.calculate_md5()
-        if key.etag == '"%s"' % value.md5[0]:
+        if existing_object.e_tag == '"%s"' % value.md5:
             return None
         else:
             return key
@@ -241,7 +243,7 @@ def create_attr(value, options):
 
 def putter(put, put_queue, stat_queue, options):
     logger = logging.getLogger('%s[putter-%d]' % (os.path.basename(sys.argv[0]), current_process().pid))
-    connection, bucket = None, None
+    s3_connection, bucket = None, None
     file_object_cache = FileObjectCache()
     # Figure out what content types we want to gzip
     if not options.gzip_type:  # default
@@ -264,10 +266,10 @@ def putter(put, put_queue, stat_queue, options):
         value = Value(file_object_cache, **value_kwargs)
         should_gzip = False
         try:
-            if connection is None:
-                connection = S3Connection(is_secure=options.secure, host=options.host)
+            if s3_connection is None:
+                s3_connection = boto3.resource('s3')
             if bucket is None:
-                bucket = connection.get_bucket(options.bucket)
+                bucket = s3_connection.Bucket(options.bucket)
             key = put(bucket, key_name, value)
             if key:
                 if value.should_copy_content():
@@ -282,10 +284,10 @@ def putter(put, put_queue, stat_queue, options):
                             content_type = mimetypes.guess_type(value.path)[0]
                         else:
                             content_type = options.content_type
-                        headers['Content-Type'] = content_type
 
                     content = value.get_content()
-                    md5 = value.md5
+                    md5 = value.calculate_md5()
+                    print "md5: " + md5
                     should_gzip = options.gzip and (
                         content_type and content_type in gzip_content_types or
                         gzip_content_types == GZIP_ALL)
@@ -296,15 +298,18 @@ def putter(put, put_queue, stat_queue, options):
                         gzip_file.write(content)
                         gzip_file.close()
                         content = string_io.getvalue()
-                        md5 = compute_md5(StringIO(content))
+                        md5 = hashlib.md5((StringIO(content).getvalue())).hexdigest()
                     if options.yas3fs:
                         attr = create_attr(value, options)
                         logger.debug('yas3fs attributes ' + json.dumps(attr))
                         headers['x-amz-meta-attr'] = json.dumps(attr)
                     if not options.dry_run:
-                        key.set_contents_from_string(content, headers, md5=md5, policy=options.grant, encrypt_key=options.encrypt_key)
-                logger.info('%s %s> %s' % (
-                    value.path, 'z' if should_gzip else '-', key.name))
+                        bucket.put_object(
+                            Key=key,
+                            Body=content
+                        )
+                        #key.set_contents_from_string(content, headers, md5=md5, policy=options.grant, encrypt_key=options.encrypt_key)
+                logger.info('%s %s> %s' % (value.path, 'z' if should_gzip else '-', key))
                 stat_queue.put(dict(size=value.get_size()))
             else:
                 logger.info('skipping %s -> %s' % (value.path, key_name))
@@ -366,9 +371,9 @@ def main(argv):
             help='set key prefix')
     group.add_option('--resume', action='append', default=[], metavar='FILENAME',
             help='resume from log file')
-    group.add_option('--grant', metavar='GRANT', default=None, choices=CannedACLStrings,
-            help='A canned ACL policy to be applied to each file uploaded.\nChoices: %s' %
-            ', '.join(CannedACLStrings))
+    #group.add_option('--grant', metavar='GRANT', default=None, choices=CannedACLStrings,
+    #        help='A canned ACL policy to be applied to each file uploaded.\nChoices: %s' %
+    #        ', '.join(CannedACLStrings))
     group.add_option('--header', metavar='HEADER:VALUE', dest='headers', action='append',
                      help='extra headers to add to the file, can be specified multiple times')
     group.add_option('--encrypt-key', action='store_true', default=False, dest='encrypt_key',
@@ -409,19 +414,10 @@ def main(argv):
         return 1
     if not options.bucket_region:
         options.bucket_region = 'us-east-1'
-    connection = boto.s3.connect_to_region(options.bucket_region,
-       aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-       aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-       is_secure=True,
-       calling_format = boto.s3.connection.OrdinaryCallingFormat(),
-       )
-    bucket = connection.get_bucket(options.bucket)
-    del bucket
-    del connection
     start = time.time()
     put_queue = JoinableQueue(1024 * options.processes)
     stat_queue = JoinableQueue()
-    walk = {'filesystem': walk_filesystem, 'tar': walk_tar, 's3': walk_s3}[options.walk]
+    walk = {'filesystem': walk_filesystem, 'tar': walk_tar}[options.walk]
     walker_process = Process(target=walker, args=(walk, put_queue, args, options))
     walker_process.start()
     put = {'add': put_add, 'stupid': put_stupid, 'update': put_update, 'copy': put_copy}[options.put]
