@@ -64,6 +64,10 @@ CannedACLStrings = ['private', 'public-read',
                     'public-read-write', 'authenticated-read',
                     'bucket-owner-read', 'bucket-owner-full-control',
                     'log-delivery-write']
+GIT_IGNORE = '.gitignore'
+SVG_CONTENT_TYPE = 'image/svg+xml'
+EOT_CONTENT_TYPE = 'application/vnd.ms-fontobject'
+DEFAULT_CONTENT_TYPE = 'text/plain'
 
 
 def repeatedly(func, *args, **kwargs):
@@ -278,7 +282,7 @@ def putter(put, put_queue, stat_queue, options):
             if bucket is None:
                 bucket = s3_connection.Bucket(options.bucket)
             key = put(bucket, key_name, value)
-            if key:
+            if key and GIT_IGNORE not in key:
                 if value.should_copy_content():
                     if options.headers:
                         metadata = dict(tuple(header.split(':', 1)) for header in options.headers)
@@ -292,7 +296,6 @@ def putter(put, put_queue, stat_queue, options):
                         else:
                             content_type = options.content_type
                     content = value.get_content()
-                    md5 = value.calculate_md5()
                     should_gzip = options.gzip and (
                         content_type and content_type in gzip_content_types or
                         gzip_content_types == GZIP_ALL)
@@ -303,18 +306,26 @@ def putter(put, put_queue, stat_queue, options):
                         gzip_file.write(content)
                         gzip_file.close()
                         content = string_io.getvalue()
-                        md5 = hashlib.md5((StringIO(content).getvalue())).hexdigest()
                     if options.yas3fs:
                         attr = create_attr(value, options)
                         logger.debug('yas3fs attributes ' + json.dumps(attr))
                         metadata['x-amz-meta-attr'] = json.dumps(attr)
+                    if content_type is None:
+                        filename, file_extension = os.path.splitext(key)
+                        del filename
+                        if file_extension == '.svg' or file_extension == '.gz':
+                            content_type = SVG_CONTENT_TYPE
+                        elif file_extension == '.eot':
+                            content_type = EOT_CONTENT_TYPE
+                        else:
+                            content_type = DEFAULT_CONTENT_TYPE
                     if not options.dry_run:
                         new_obj = bucket.put_object(
                             Key=key,
                             Body=content,
                             ContentType=content_type,
                             Metadata=metadata,
-                            ACL=options.grant
+                            ACL=options.grant,
                         )
                         if content_encoding:
                             new_obj.content_encoding = content_encoding
