@@ -59,6 +59,11 @@ GZIP_CONTENT_TYPES = (
     'text/javascript',
 )
 GZIP_ALL = 'all'
+# Borrowed this from boto 2.40.0
+CannedACLStrings = ['private', 'public-read',
+                    'public-read-write', 'authenticated-read',
+                    'bucket-owner-read', 'bucket-owner-full-control',
+                    'log-delivery-write']
 
 
 def repeatedly(func, *args, **kwargs):
@@ -228,6 +233,7 @@ def put_update(bucket, key_name, value):
 def put_copy(bucket, key_name, value):
     return bucket.copy_key(key_name, value.bucket_name, key_name)
 
+
 def create_attr(value, options):
     attr = {}
     now = time.mktime(time.gmtime())
@@ -275,24 +281,23 @@ def putter(put, put_queue, stat_queue, options):
             if key:
                 if value.should_copy_content():
                     if options.headers:
-                        headers = dict(tuple(header.split(':', 1)) for header in options.headers)
+                        metadata = dict(tuple(header.split(':', 1)) for header in options.headers)
                     else:
-                        headers = {}
-
+                        metadata = {}
                     content_type = None
+                    content_encoding = None
                     if options.content_type:
                         if options.content_type == "guess":
                             content_type = mimetypes.guess_type(value.path)[0]
                         else:
                             content_type = options.content_type
-
                     content = value.get_content()
                     md5 = value.calculate_md5()
                     should_gzip = options.gzip and (
                         content_type and content_type in gzip_content_types or
                         gzip_content_types == GZIP_ALL)
                     if should_gzip:
-                        headers['Content-Encoding'] = 'gzip'
+                        content_encoding = 'gzip'
                         string_io = StringIO()
                         gzip_file = GzipFile(compresslevel=9, fileobj=string_io, mode='w')
                         gzip_file.write(content)
@@ -302,13 +307,17 @@ def putter(put, put_queue, stat_queue, options):
                     if options.yas3fs:
                         attr = create_attr(value, options)
                         logger.debug('yas3fs attributes ' + json.dumps(attr))
-                        headers['x-amz-meta-attr'] = json.dumps(attr)
+                        metadata['x-amz-meta-attr'] = json.dumps(attr)
                     if not options.dry_run:
                         bucket.put_object(
                             Key=key,
-                            Body=content
+                            Body=content,
+                            ContentType=content_type,
+                            ContentEncoding=content_encoding,
+                            Metadata=metadata,
+                            ACL=options.grant
                         )
-                        #key.set_contents_from_string(content, headers, md5=md5, policy=options.grant, encrypt_key=options.encrypt_key)
+                        # TODO: Figure out how to re-implement the "encrypt_key" parameter from boto 2's "set_contents__from_string".
                 logger.info('%s %s> %s' % (value.path, 'z' if should_gzip else '-', key))
                 stat_queue.put(dict(size=value.get_size()))
             else:
@@ -371,9 +380,9 @@ def main(argv):
             help='set key prefix')
     group.add_option('--resume', action='append', default=[], metavar='FILENAME',
             help='resume from log file')
-    #group.add_option('--grant', metavar='GRANT', default=None, choices=CannedACLStrings,
-    #        help='A canned ACL policy to be applied to each file uploaded.\nChoices: %s' %
-    #        ', '.join(CannedACLStrings))
+    group.add_option('--grant', metavar='GRANT', default=None, choices=CannedACLStrings,
+            help='A canned ACL policy to be applied to each file uploaded.\nChoices: %s' %
+            ', '.join(CannedACLStrings))
     group.add_option('--header', metavar='HEADER:VALUE', dest='headers', action='append',
                      help='extra headers to add to the file, can be specified multiple times')
     group.add_option('--encrypt-key', action='store_true', default=False, dest='encrypt_key',
