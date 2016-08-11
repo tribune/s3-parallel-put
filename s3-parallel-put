@@ -68,6 +68,8 @@ DEFAULT_CANNED_ACL = 5
 GIT_IGNORE = '.gitignore'
 SVG_CONTENT_TYPE = 'image/svg+xml'
 EOT_CONTENT_TYPE = 'application/vnd.ms-fontobject'
+WOFF_CONTENT_TYPE = 'font/woff'
+WOFF2_CONTENT_TYPE = 'font/woff2'
 DEFAULT_CONTENT_TYPE = 'text/plain'
 
 
@@ -317,6 +319,10 @@ def putter(put, put_queue, stat_queue, options):
                             content_type = SVG_CONTENT_TYPE
                         elif file_extension == '.eot':
                             content_type = EOT_CONTENT_TYPE
+                        elif file_extension == '.woff':
+                            content_type = WOFF_CONTENT_TYPE
+                        elif file_extension == '.woff2':
+                            content_type = WOFF2_CONTENT_TYPE
                         else:
                             content_type = DEFAULT_CONTENT_TYPE
                     if not options.dry_run:
